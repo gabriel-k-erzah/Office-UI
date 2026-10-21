@@ -1,13 +1,9 @@
-import Game from "./game/Game";
-import "./App.css";
+import "./ui/styles/office.css";
+
+import { Dashboard } from "./ui/components/Dashboard";
 
 function App() {
-  return (
-    <main>
-      <h1>AI Office</h1>
-      <Game />
-    </main>
-  );
+  return <Dashboard />;
 }
 
 export default App;

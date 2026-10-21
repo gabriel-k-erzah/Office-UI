@@ -1,5 +1,10 @@
 import Phaser from "phaser";
 
+import {
+  rooms,
+  type RoomName,
+} from "../rooms/roomConfig";
+
 export type AgentState =
   | "idle"
   | "walking"
@@ -13,6 +18,7 @@ export type AgentConfig = {
   x: number;
   y: number;
   colour?: number;
+  startingRoom: RoomName;
 };
 
 export class Agent {
@@ -21,20 +27,32 @@ export class Agent {
 
   protected state: AgentState = "idle";
 
+  protected currentRoom: RoomName;
+  protected targetRoom?: RoomName;
+
   private destination?: Phaser.Math.Vector2;
+
   private wandering = false;
+
   private speechBubble?: Phaser.GameObjects.Text;
 
   private readonly speed = 1.5;
   private readonly arrivalDistance = 5;
 
-  constructor(scene: Phaser.Scene, config: AgentConfig) {
+  constructor(
+    scene: Phaser.Scene,
+    config: AgentConfig
+  ) {
     this.scene = scene;
-    this.character = this.createCharacter(config);
+
+    this.currentRoom = config.startingRoom;
+
+    this.character =
+      this.createCharacter(config);
   }
 
   update() {
-    this.handleMovement();
+    this.movement();
   }
 
   // ─────────────────────────────
@@ -42,20 +60,34 @@ export class Agent {
   // ─────────────────────────────
 
   moveTo(x: number, y: number) {
-    this.destination = new Phaser.Math.Vector2(x, y);
+    this.destination =
+      new Phaser.Math.Vector2(x, y);
+
     this.setState("walking");
   }
 
-  moveRandomly() {
-    this.moveTo(
-      this.randomX(),
-      this.randomY()
-    );
+  moveToLibrary() {
+    this.travelTo("library");
+  }
+
+  moveToMeetingRoom() {
+    this.travelTo("meetingRoom");
+  }
+
+  moveToDeveloperZone() {
+    this.travelTo("developerZone");
+  }
+
+  moveToManagerOffice() {
+    this.travelTo("managerOffice");
   }
 
   wander() {
     this.wandering = true;
-    this.startNextWander();
+
+    if (!this.hasDestination()) {
+      this.wanderCurrentRoom();
+    }
   }
 
   stopWandering() {
@@ -66,20 +98,28 @@ export class Agent {
   // Speech
   // ─────────────────────────────
 
-  speak(message: string, duration = 3000) {
+  speak(
+    message: string,
+    duration = 3000
+  ) {
     this.removeCurrentSpeechBubble();
 
-    this.speechBubble = this.createSpeechBubble(message);
+    this.speechBubble =
+      this.createSpeechBubble(message);
 
     this.removeSpeechBubbleAfter(duration);
   }
 
-  speakRandomly(messages: string[], duration = 3000) {
+  speakRandomly(
+    messages: string[],
+    duration = 3000
+  ) {
     if (messages.length === 0) {
       return;
     }
 
-    const message = Phaser.Utils.Array.GetRandom(messages);
+    const message =
+      Phaser.Utils.Array.GetRandom(messages);
 
     this.speak(message, duration);
   }
@@ -96,6 +136,10 @@ export class Agent {
     return this.state;
   }
 
+  getCurrentRoom(): RoomName {
+    return this.currentRoom;
+  }
+
   // ─────────────────────────────
   // Timing
   // ─────────────────────────────
@@ -105,19 +149,23 @@ export class Agent {
     maximum: number,
     action: () => void
   ) {
-    const delay = Phaser.Math.Between(
-      minimum,
-      maximum
-    );
+    const delay =
+      Phaser.Math.Between(
+        minimum,
+        maximum
+      );
 
-    this.scene.time.delayedCall(delay, action);
+    this.scene.time.delayedCall(
+      delay,
+      action
+    );
   }
 
   // ─────────────────────────────
   // Movement internals
   // ─────────────────────────────
 
-  private handleMovement() {
+  private movement() {
     if (!this.hasDestination()) {
       return;
     }
@@ -130,17 +178,32 @@ export class Agent {
     this.takeStep();
   }
 
-  private hasDestination() {
-    return this.destination !== undefined;
-  }
+  private travelTo(room: RoomName) {
+    this.stopWandering();
 
-  private hasArrived() {
-    return this.distanceToDestination() <= this.arrivalDistance;
+    this.targetRoom = room;
+
+    const entrance =
+      rooms[room].entrance;
+
+    this.moveTo(
+      entrance.x,
+      entrance.y
+    );
   }
 
   private finishMovement() {
     this.snapToDestination();
     this.clearDestination();
+
+    if (this.targetRoom) {
+      this.enterRoom(
+        this.targetRoom
+      );
+
+      return;
+    }
+
     this.setState("idle");
 
     if (this.wandering) {
@@ -148,18 +211,59 @@ export class Agent {
     }
   }
 
-  private takeStep() {
-    if (!this.destination) {
-      return;
-    }
+  private enterRoom(room: RoomName) {
+    this.currentRoom = room;
+    this.targetRoom = undefined;
 
-    const direction = this.directionToDestination();
+    this.setState("idle");
 
-    this.character.x +=
-      Math.cos(direction) * this.speed;
+    this.wandering = true;
 
-    this.character.y +=
-      Math.sin(direction) * this.speed;
+    this.scheduleNextWander();
+  }
+
+  private wanderCurrentRoom() {
+    const room =
+      rooms[this.currentRoom];
+
+    const x =
+      Phaser.Math.Between(
+        room.bounds.xMin,
+        room.bounds.xMax
+      );
+
+    const y =
+      Phaser.Math.Between(
+        room.bounds.yMin,
+        room.bounds.yMax
+      );
+
+    this.moveTo(x, y);
+  }
+
+  private scheduleNextWander() {
+    this.wait(
+      1000,
+      15000,
+      () => {
+        if (!this.wandering) {
+          return;
+        }
+
+        this.wanderCurrentRoom();
+      }
+    );
+  }
+
+  private hasDestination() {
+    return this.destination !== undefined;
+  }
+
+  private hasArrived() {
+    return (
+      this.distanceToDestination()
+      <= this.arrivalDistance
+    );
   }
 
   private distanceToDestination() {
@@ -188,6 +292,19 @@ export class Agent {
     );
   }
 
+  private takeStep() {
+    const direction =
+      this.directionToDestination();
+
+    this.character.x +=
+      Math.cos(direction)
+      * this.speed;
+
+    this.character.y +=
+      Math.sin(direction)
+      * this.speed;
+  }
+
   private snapToDestination() {
     if (!this.destination) {
       return;
@@ -204,64 +321,54 @@ export class Agent {
   }
 
   // ─────────────────────────────
-  // Wandering
-  // ─────────────────────────────
-
-  private startNextWander() {
-    if (!this.wandering || this.hasDestination()) {
-      return;
-    }
-
-    this.moveRandomly();
-  }
-
-  private scheduleNextWander() {
-    this.wait(1000, 15000, () => {
-      this.startNextWander();
-    });
-  }
-
-  private randomX() {
-    return Phaser.Math.Between(80, 720);
-  }
-
-  private randomY() {
-    return Phaser.Math.Between(140, 520);
-  }
-
-  // ─────────────────────────────
   // Speech internals
   // ─────────────────────────────
 
-  private createSpeechBubble(message: string) {
-    const bubble = this.scene.add
-      .text(0, -75, message, {
-        fontSize: "13px",
-        color: "#000000",
-        backgroundColor: "#ffffff",
+  private createSpeechBubble(
+    message: string
+  ) {
+    const bubble =
+      this.scene.add
+        .text(
+          0,
+          -75,
+          message,
+          {
+            fontSize: "13px",
 
-        padding: {
-          x: 10,
-          y: 6,
-        },
+            color: "#000000",
 
-        wordWrap: {
-          width: 180,
-        },
+            backgroundColor:
+              "#ffffff",
 
-        align: "center",
-      })
-      .setOrigin(0.5, 1);
+            padding: {
+              x: 10,
+              y: 6,
+            },
+
+            wordWrap: {
+              width: 180,
+            },
+
+            align: "center",
+          }
+        )
+        .setOrigin(0.5, 1);
 
     this.character.add(bubble);
 
     return bubble;
   }
 
-  private removeSpeechBubbleAfter(milliseconds: number) {
-    this.scene.time.delayedCall(milliseconds, () => {
-      this.removeCurrentSpeechBubble();
-    });
+  private removeSpeechBubbleAfter(
+    milliseconds: number
+  ) {
+    this.scene.time.delayedCall(
+      milliseconds,
+      () => {
+        this.removeCurrentSpeechBubble();
+      }
+    );
   }
 
   private removeCurrentSpeechBubble() {
@@ -277,18 +384,32 @@ export class Agent {
   // Character creation
   // ─────────────────────────────
 
-  private createCharacter(config: AgentConfig) {
-    const body = this.createBody(config.colour);
-    const label = this.createLabel(config.name);
+  private createCharacter(
+    config: AgentConfig
+  ) {
+    const body =
+      this.createBody(
+        config.colour
+      );
+
+    const label =
+      this.createLabel(
+        config.name
+      );
 
     return this.scene.add.container(
       config.x,
       config.y,
-      [body, label]
+      [
+        body,
+        label,
+      ]
     );
   }
 
-  private createBody(colour = 0x3b82f6) {
+  private createBody(
+    colour = 0x3b82f6
+  ) {
     return this.scene.add.rectangle(
       0,
       0,
@@ -298,12 +419,19 @@ export class Agent {
     );
   }
 
-  private createLabel(name: string) {
+  private createLabel(
+    name: string
+  ) {
     return this.scene.add
-      .text(0, -38, name, {
-        fontSize: "14px",
-        color: "#ffffff",
-      })
+      .text(
+        0,
+        -38,
+        name,
+        {
+          fontSize: "14px",
+          color: "#ffffff",
+        }
+      )
       .setOrigin(0.5);
   }
 }

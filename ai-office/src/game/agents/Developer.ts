@@ -1,4 +1,5 @@
 import Phaser from "phaser";
+
 import { Agent } from "./Agent";
 
 export class Developer extends Agent {
@@ -11,12 +12,17 @@ export class Developer extends Agent {
     "Maybe I should check the logs.",
   ];
 
-  constructor(scene: Phaser.Scene, x: number, y: number) {
+  constructor(
+    scene: Phaser.Scene,
+    x: number,
+    y: number
+  ) {
     super(scene, {
       name: "Developer",
       x,
       y,
       colour: 0x22c55e,
+      startingRoom: "developerZone",
     });
 
     this.wander();
@@ -24,14 +30,38 @@ export class Developer extends Agent {
   }
 
   develop() {
-    this.setState("working");
-    this.speak("Starting development...");
+    this.stopWandering();
+
+    this.speak(
+      "Starting development..."
+    );
+
+    this.moveToDeveloperZone();
+  }
+
+  report() {
+    this.stopWandering();
+
+    this.setState("reporting");
+
+    this.speak(
+      "Development complete."
+    );
+
+    this.moveToMeetingRoom();
   }
 
   private randomWanderSpeech() {
-    this.wait(5000, 15000, () => {
-      this.speakRandomly(this.wanderSpeech);
-      this.randomWanderSpeech();
-    });
+    this.wait(
+      5000,
+      15000,
+      () => {
+        this.speakRandomly(
+          this.wanderSpeech
+        );
+
+        this.randomWanderSpeech();
+      }
+    );
   }
 }
