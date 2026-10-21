@@ -17,6 +17,7 @@ export class Researcher extends Agent {
       x,
       y,
       colour: 0x3b82f6,
+      startingRoom: "library",
     });
 
     this.wander();
@@ -24,8 +25,17 @@ export class Researcher extends Agent {
   }
 
   research() {
+    this.stopWandering();
     this.setState("researching");
     this.speak("Starting research...");
+    this.moveToLibrary();
+  }
+
+  report() {
+    this.stopWandering();
+    this.setState("reporting");
+    this.speak("Research complete.");
+    this.moveToMeetingRoom();
   }
 
   private randomWanderSpeech() {
