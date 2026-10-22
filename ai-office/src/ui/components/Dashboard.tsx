@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import { displayModel, refreshOllamaStatus, resolveModel, streamChat, useOllamaStatus, type OllamaStatus } from "../../ai/ollama";
+import { useLoungeChat } from "../../ai/loungeChat";
+import { buildChatPrompt, CHAT_MAX_TOKENS, cleanReply, excerpt } from "../../ai/teamChat";
 import { Avatar } from "../agents/Avatar";
 import {
   createProfile,
@@ -15,22 +18,15 @@ import {
 } from "../agents/profile";
 import { useAgentProfiles } from "../agents/profileStore";
 import {
-  agentLogs,
-  initialActivity,
-  initialChat,
-  initialTasks,
-  project,
-  systemLog,
-  systemStats,
-  terminalLines,
+  isActive,
   type ActivityItem,
   type ChatMessage,
   type Task,
   type TaskPriority,
   type TaskStatus,
-} from "../data/mock";
+} from "../data/types";
 import { Icon, type IconName } from "./Icon";
-import Game from "../../game/Game";
+import { OfficeSim } from "../office/simulation";
 import { OfficeView } from "./OfficeView";
 import { ProfileBuilder, TraitRadar } from "./ProfileBuilder";
 
@@ -52,9 +48,14 @@ export function Dashboard() {
   const [view, setView] = useState<View>("office");
   const [selectedId, setSelectedId] = useState<string>();
   const [editing, setEditing] = useState<Editing>(null);
-  const [tasks, setTasks] = useState<Task[]>(initialTasks);
-  const [activity, setActivity] = useState<ActivityItem[]>(initialActivity);
-  const [officeMode, setOfficeMode] = useState<"illustrated" | "live">("illustrated");
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [activity, setActivity] = useState<ActivityItem[]>([]);
+  const [sim] = useState(() => new OfficeSim());
+  const hasWork = tasks.some(isActive);
+
+  useEffect(() => {
+    sim.setHasWork(hasWork);
+  }, [sim, hasWork]);
 
   const byId = useMemo(() => new Map(profiles.map((p) => [p.id, p])), [profiles]);
   const selected = selectedId ? byId.get(selectedId) : undefined;
@@ -82,28 +83,8 @@ export function Dashboard() {
           {view === "office" && (
             <div className="office-grid">
               <section className="panel office-panel">
-                {officeMode === "illustrated" ? (
-                  <OfficeView agents={profiles} selectedId={selectedId} onSelect={setSelectedId} />
-                ) : (
-                  <div className="phaser-stage"><Game /></div>
-                )}
-                <div className="segmented office-mode" role="radiogroup" aria-label="Office view">
-                  {([
-                    ["illustrated", "Illustrated"],
-                    ["live", "Live (Phaser)"],
-                  ] as const).map(([mode, label]) => (
-                    <button
-                      key={mode}
-                      role="radio"
-                      aria-checked={officeMode === mode}
-                      className={`seg ${officeMode === mode ? "on" : ""}`}
-                      onClick={() => setOfficeMode(mode)}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                {selected && officeMode === "illustrated" && (
+                <OfficeView sim={sim} agents={profiles} selectedId={selectedId} onSelect={setSelectedId} />
+                {selected && (
                   <AgentPopover
                     agent={selected}
                     tasks={tasks.filter((t) => t.assigneeId === selected.id)}
@@ -112,12 +93,12 @@ export function Dashboard() {
                   />
                 )}
               </section>
-              <ChatPanel profiles={profiles} byId={byId} onActivity={logActivity} />
+              <ChatPanel sim={sim} profiles={profiles} tasks={tasks} byId={byId} onActivity={logActivity} />
               <TasksPanel tasks={tasks} setTasks={setTasks} profiles={profiles} byId={byId} onActivity={logActivity} />
               <div className="right-rail">
                 <ProgressPanel />
                 <ActivityPanel activity={activity} byId={byId} />
-                <TerminalPanel agent={byId.get("agent_leo") ?? profiles[0]} />
+                <TerminalPanel />
               </div>
             </div>
           )}
@@ -235,10 +216,7 @@ function Sidebar({
     <aside className="sidebar">
       <div className="side-section">
         <p className="side-label">Project</p>
-        <button className="project-select">
-          {project.name} <Icon name="chevronDown" size={16} />
-        </button>
-        <span className="pill ok"><span className="dot" /> Active</span>
+        <p className="muted small">No project yet</p>
       </div>
 
       <nav className="side-links">
@@ -273,16 +251,24 @@ function Sidebar({
       <div className="side-section">
         <p className="side-label">System</p>
         <dl className="sys-stats">
-          {systemStats.map((s) => (
-            <div key={s.label}>
-              <dt>{s.label}</dt>
-              <dd>{s.label === "Active tasks" ? activeTasks : s.value}</dd>
-            </div>
-          ))}
+          <div><dt>Agents in</dt><dd>{profiles.filter((p) => p.status !== "offline").length}</dd></div>
+          <div><dt>Active tasks</dt><dd>{activeTasks}</dd></div>
         </dl>
-        <span className="pill ok"><span className="dot" /> All systems operational</span>
+        <OllamaPill />
       </div>
     </aside>
+  );
+}
+
+function OllamaPill() {
+  const status = useOllamaStatus();
+  if (status.state === "checking") return <span className="pill plain"><span className="dot" /> Checking Ollama…</span>;
+  if (status.state === "offline") return <span className="pill plain warn"><span className="dot" /> Ollama offline</span>;
+  const count = status.models.length;
+  return (
+    <span className={`pill plain ${count ? "ok" : "warn"}`}>
+      <span className="dot" /> Ollama connected · {count} model{count === 1 ? "" : "s"}
+    </span>
   );
 }
 
@@ -331,40 +317,129 @@ function PanelHead({ title, children }: { title: string; children?: ReactNode })
 }
 
 function ChatPanel({
-  profiles, byId, onActivity,
+  sim, profiles, tasks, byId, onActivity,
 }: {
-  profiles: AgentProfile[]; byId: Map<string, AgentProfile>; onActivity: (agentId: string, text: string) => void;
+  sim: OfficeSim;
+  profiles: AgentProfile[];
+  tasks: Task[];
+  byId: Map<string, AgentProfile>;
+  onActivity: (agentId: string, text: string) => void;
 }) {
   const [tab, setTab] = useState<"chat" | "logs" | "system">("chat");
-  const [messages, setMessages] = useState<ChatMessage[]>(initialChat);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // Replies to you in flight (agents don't make small talk meanwhile).
+  const [answering, setAnswering] = useState(0);
   const [draft, setDraft] = useState("");
   const [typing, setTyping] = useState<AgentProfile>();
   const listRef = useRef<HTMLDivElement>(null);
+  const requests = useRef(new Set<AbortController>());
+  const ollama = useOllamaStatus();
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, typing, tab]);
 
-  const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  // Stop any replies still streaming if the panel goes away.
+  useEffect(() => {
+    const open = requests.current;
+    return () => open.forEach((controller) => controller.abort());
+  }, []);
 
-  const send = () => {
+  const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const add = (message: Omit<ChatMessage, "id" | "time">) => {
+    const id = crypto.randomUUID();
+    setMessages((m) => [...m, { id, time: now(), ...message }]);
+    return id;
+  };
+  const update = (id: string, text: string) =>
+    setMessages((m) => m.map((message) => (message.id === id ? { ...message, text } : message)));
+
+  const models = ollama.state === "online" ? ollama.models : [];
+  const lounge = useLoungeChat({
+    sim,
+    profiles,
+    models,
+    enabled: models.length > 0 && answering === 0 && !tasks.some(isActive),
+    post: add,
+    update,
+  });
+
+  const send = async () => {
     const text = draft.trim();
     if (!text) return;
-    setMessages((m) => [...m, { id: crypto.randomUUID(), authorId: "user", time: now(), text }]);
+    lounge.interrupt();
+    const history = [...messages, { id: crypto.randomUUID(), authorId: "user", time: now(), text }];
+    setMessages(history);
     setDraft("");
 
-    const mentioned = profiles.find((p) => text.toLowerCase().includes(p.name.toLowerCase()));
-    const responder = mentioned ?? profiles.find((p) => p.role === "manager") ?? profiles[0];
+    const present = profiles.filter((p) => p.status !== "offline");
+    const mentioned = present.find((p) => text.toLowerCase().includes(p.name.toLowerCase()));
+    const responder = mentioned ?? present.find((p) => p.role === "manager") ?? present[0];
     if (!responder) return;
+
+    const choice = ollama.state === "online" ? resolveModel(responder, ollama.models) : undefined;
+    if (!choice) {
+      add({
+        authorId: responder.id,
+        error: true,
+        text:
+          ollama.state === "online"
+            ? "There aren't any models in Ollama yet. Run “ollama pull llama3” and ask me again."
+            : "I can't reach Ollama on this machine. Open the Ollama app and ask me again.",
+      });
+      void refreshOllamaStatus();
+      return;
+    }
+
+    const controller = new AbortController();
+    requests.current.add(controller);
+    setAnswering((n) => n + 1);
     setTyping(responder);
-    setTimeout(() => {
-      setTyping(undefined);
-      setMessages((m) => [...m, { id: crypto.randomUUID(), authorId: responder.id, time: now(), text: replyFor(responder) }]);
+    sim.setTask(responder.id, "Thinking…");
+    let replyId: string | undefined;
+
+    try {
+      const reply = await streamChat({
+        model: choice.model,
+        messages: buildChatPrompt({ agent: responder, team: profiles, tasks, history }),
+        temperature: responder.model.temperature,
+        maxTokens: Math.min(responder.model.maxTokens, CHAT_MAX_TOKENS),
+        signal: controller.signal,
+        onToken: (full) => {
+          const shown = cleanReply(responder, full);
+          if (replyId) {
+            update(replyId, shown);
+            return;
+          }
+          setTyping(undefined);
+          sim.setTask(responder.id, "Replying in team chat");
+          replyId = add({ authorId: responder.id, text: shown, model: choice.model });
+        },
+      });
+
+      const final = cleanReply(responder, reply);
+      if (!replyId || !final) {
+        setTyping(undefined);
+        add({ authorId: responder.id, error: true, text: "I started to answer but nothing came out. Try asking again?" });
+        return;
+      }
+      sim.say(responder.id, excerpt(final));
       onActivity(responder.id, "replied in team chat");
-    }, 1100);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setTyping(undefined);
+      const reason = error instanceof Error ? error.message : String(error);
+      add({ authorId: responder.id, error: true, text: `Ollama couldn't answer (${reason}).` });
+      void refreshOllamaStatus();
+    } finally {
+      requests.current.delete(controller);
+      setAnswering((n) => n - 1);
+      sim.setTask(responder.id, null);
+    }
   };
 
-  const shown = tab === "chat" ? messages : tab === "logs" ? agentLogs : systemLog;
+  // Logs fill up once agents run real tools.
+  const shown = tab === "chat" ? messages : [];
 
   return (
     <section className="panel chat-panel">
@@ -378,17 +453,27 @@ function ChatPanel({
             {label}
           </button>
         ))}
+        <EngineBadge status={ollama} />
       </div>
 
       <div className="chat-list" ref={listRef}>
+        {shown.length === 0 && !typing && (
+          <p className="chat-empty">
+            {tab === "chat"
+              ? "Quiet in here. Say hello, or wait a moment: with nothing on, the team gets chatting in the lounge."
+              : "Nothing logged yet. Tool calls and system events will show up here once agents start real work."}
+          </p>
+        )}
         {shown.map((m) => {
           const author = m.authorId === "user" ? undefined : byId.get(m.authorId);
           return (
-            <div key={m.id} className={`msg ${m.authorId === "user" ? "mine" : ""} ${tab !== "chat" ? "log" : ""}`}>
+            <div key={m.id} className={`msg ${m.authorId === "user" ? "mine" : ""} ${tab !== "chat" ? "log" : ""} ${m.error ? "error" : ""} ${m.casual ? "casual" : ""}`}>
               {m.authorId === "user" ? <span className="me small">GB</span> : author && <Avatar avatar={author.avatar} size={30} />}
               <div className="msg-body">
                 <p className="msg-meta">
                   <strong>{m.authorId === "user" ? "You" : author?.name ?? "Agent"}</strong> <time>{m.time}</time>
+                  {m.casual && <span className="msg-model">lounge</span>}
+                  {m.model && <span className="msg-model">{displayModel(m.model)}</span>}
                 </p>
                 <p className="msg-text">{m.text}</p>
               </div>
@@ -403,7 +488,7 @@ function ChatPanel({
         )}
       </div>
 
-      <form className="chat-input" onSubmit={(e) => { e.preventDefault(); send(); }}>
+      <form className="chat-input" onSubmit={(e) => { e.preventDefault(); void send(); }}>
         <input id="chat-message" placeholder="Message the team… mention an agent by name" value={draft} onChange={(e) => setDraft(e.target.value)} />
         <button className="send" type="submit" aria-label="Send"><Icon name="send" size={18} /></button>
       </form>
@@ -411,16 +496,21 @@ function ChatPanel({
   );
 }
 
-function replyFor(agent: AgentProfile) {
-  const replies: Record<AgentProfile["tone"], string> = {
-    professional: "Understood. I'll take this on and report back with findings shortly.",
-    friendly: "Love it! I'm on it and will share an update soon.",
-    concise: "On it. Update in 10.",
-    playful: "Ooh, a new quest. Grabbing my keyboard now!",
-    socratic: "Good question. What outcome matters most to you here, speed or polish?",
-    direct: "Clear. Starting now. I'll flag blockers immediately.",
-  };
-  return replies[agent.tone];
+function EngineBadge({ status }: { status: OllamaStatus }) {
+  const label =
+    status.state === "checking"
+      ? "Checking Ollama…"
+      : status.state === "offline"
+        ? "Ollama offline"
+        : status.models.length
+          ? `Ollama · ${displayModel(status.models[0])}`
+          : "Ollama · no models";
+  const ok = status.state === "online" && status.models.length > 0;
+  return (
+    <span className={`engine-badge ${ok ? "ok" : status.state === "checking" ? "" : "warn"}`} title="Team chat replies come from your local Ollama">
+      <span className="dot" /> {label}
+    </span>
+  );
 }
 
 const statusLabel: Record<TaskStatus, string> = {
@@ -500,6 +590,13 @@ function TasksPanel({
             <tr><th>Task</th><th>Agent</th><th>Status</th><th>Priority</th><th>Due</th></tr>
           </thead>
           <tbody>
+            {shown.length === 0 && (
+              <tr>
+                <td colSpan={5} className="muted table-empty">
+                  {tasks.length ? "Nothing in this column." : "No tasks yet. Add one with New task and the team gets to work."}
+                </td>
+              </tr>
+            )}
             {shown.map((t) => {
               const agent = byId.get(t.assigneeId);
               return (
@@ -535,27 +632,10 @@ function TasksPanel({
 }
 
 function ProgressPanel() {
-  const done = project.milestones.filter((m) => m.state === "done").length;
-  const pct = Math.round(((done + 0.5) / project.milestones.length) * 100);
   return (
     <section className="panel">
       <p className="eyebrow">Project progress</p>
-      <div className="progress-head">
-        <h2>{project.name}</h2>
-        <span className="pill ok">{project.status}</span>
-      </div>
-      <div className="progress-bar" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
-        <span style={{ width: `${pct}%` }} />
-      </div>
-      <p className="progress-pct">{pct}%</p>
-      <ul className="milestones">
-        {project.milestones.map((m) => (
-          <li key={m.title} className={m.state}>
-            <span className="ms-icon">{m.state === "done" && <Icon name="check" size={12} />}</span>
-            {m.title}
-          </li>
-        ))}
-      </ul>
+      <p className="panel-empty">No project running. When you start one, its milestones show up here.</p>
     </section>
   );
 }
@@ -564,6 +644,7 @@ function ActivityPanel({ activity, byId }: { activity: ActivityItem[]; byId: Map
   return (
     <section className="panel">
       <p className="eyebrow">Live activity</p>
+      {activity.length === 0 && <p className="panel-empty">Nothing yet. What the agents do shows up here.</p>}
       <ul className="activity">
         {activity.slice(0, 5).map((a) => {
           const agent = byId.get(a.agentId);
@@ -578,21 +659,12 @@ function ActivityPanel({ activity, byId }: { activity: ActivityItem[]; byId: Map
           );
         })}
       </ul>
-      <button className="link-btn">View all activity <Icon name="arrowRight" size={14} /></button>
+      {activity.length > 5 && <button className="link-btn">View all activity <Icon name="arrowRight" size={14} /></button>}
     </section>
   );
 }
 
 function TerminalPanel({ agent }: { agent?: AgentProfile }) {
-  const [reduced] = useState(() => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false);
-  const [count, setCount] = useState(reduced ? terminalLines.length : 0);
-
-  useEffect(() => {
-    if (reduced) return;
-    const timer = setInterval(() => setCount((c) => (c >= terminalLines.length ? c : c + 1)), 350);
-    return () => clearInterval(timer);
-  }, [reduced]);
-
   return (
     <section className="panel terminal">
       <div className="terminal-head">
@@ -600,13 +672,7 @@ function TerminalPanel({ agent }: { agent?: AgentProfile }) {
         <Icon name="expand" size={14} />
       </div>
       <pre className="terminal-body">
-        {terminalLines.slice(0, count).map((l, i) => (
-          <span key={i} className={`t-${l.kind}`}>
-            {l.kind === "cmd" ? "> " : l.kind === "ok" ? "✓ " : ""}
-            {l.text}
-            {"\n"}
-          </span>
-        ))}
+        <span className="t-out">No commands run yet.{"\n"}</span>
         <span className="cursor">▍</span>
       </pre>
     </section>

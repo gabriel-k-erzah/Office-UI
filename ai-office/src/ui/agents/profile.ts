@@ -1,5 +1,4 @@
-import { rooms, type RoomName } from "../../game/rooms/roomConfig";
-import type { AgentConfig } from "../../game/agents/Agent";
+import { rooms, type RoomName } from "../office/rooms";
 
 // ─────────────────────────────
 // Profile model
@@ -80,6 +79,8 @@ export type AgentProfile = {
   traits: Record<TraitKey, number>;
   tone: ToneId;
   quirks: string[];
+  // Hobbies and interests: what they chat about when there's no work on.
+  interests: string[];
   skills: string[];
   tools: Record<ToolId, ToolPermission>;
   model: {
@@ -133,7 +134,7 @@ export const toneInfo: Record<
   concise: {
     label: "Concise",
     description: "Short answers, no filler.",
-    sample: "Done. Three APIs fit. CoinGecko is the best match.",
+    sample: "Done. Three options fit. The second is the best match.",
   },
   playful: {
     label: "Playful",
@@ -173,6 +174,25 @@ export const skillCatalogue: Record<string, string[]> = {
   Quality: ["Unit testing", "E2E testing", "Debugging", "Accessibility", "Performance"],
   Design: ["UI design", "UX writing", "Design systems", "Prototyping"],
 };
+
+export const interestSuggestions = [
+  "Reading",
+  "Music",
+  "Football",
+  "Cooking",
+  "Hiking",
+  "Video games",
+  "Photography",
+  "Travel",
+  "Films",
+  "Gardening",
+  "Running",
+  "Art galleries",
+  "Podcasts",
+  "Board games",
+  "Coffee",
+  "Fashion",
+];
 
 export const quirkSuggestions = [
   "Data-driven",
@@ -237,7 +257,7 @@ const allTools = (permission: ToolPermission): Record<ToolId, ToolPermission> =>
 
 type Template = Pick<
   AgentProfile,
-  "title" | "description" | "colour" | "homeRoom" | "traits" | "tone" | "quirks" | "skills" | "tools" | "idleLines"
+  "title" | "description" | "colour" | "homeRoom" | "traits" | "tone" | "quirks" | "interests" | "skills" | "tools" | "idleLines"
 > & { avatar: Partial<AvatarConfig> };
 
 export const roleTemplates: Record<AgentRole, Template> = {
@@ -249,6 +269,7 @@ export const roleTemplates: Record<AgentRole, Template> = {
     traits: { creativity: 45, rigor: 70, autonomy: 75, verbosity: 55, caution: 60, collaboration: 90 },
     tone: "professional",
     quirks: ["Big-picture", "Calm under pressure"],
+    interests: ["Chess", "Podcasts"],
     skills: ["Task breakdown", "Prioritisation", "Code review", "Reporting"],
     tools: { ...allTools("block"), readRepo: "allow", delegate: "allow", github: "ask" },
     idleLines: ["What's everyone working on?", "We should review our priorities.", "Let's keep things moving."],
@@ -262,6 +283,7 @@ export const roleTemplates: Record<AgentRole, Template> = {
     traits: { creativity: 60, rigor: 85, autonomy: 60, verbosity: 75, caution: 55, collaboration: 65 },
     tone: "friendly",
     quirks: ["Curious", "Data-driven"],
+    interests: ["Reading", "Museums"],
     skills: ["API research", "Documentation", "Summarising", "Fact checking"],
     tools: { ...allTools("block"), readRepo: "allow", webSearch: "allow" },
     idleLines: ["Interesting...", "I wonder what the data says.", "There might be another approach."],
@@ -275,6 +297,7 @@ export const roleTemplates: Record<AgentRole, Template> = {
     traits: { creativity: 65, rigor: 75, autonomy: 70, verbosity: 35, caution: 50, collaboration: 60 },
     tone: "concise",
     quirks: ["Pragmatic", "Detail-oriented"],
+    interests: ["Video games", "Side projects"],
     skills: ["TypeScript", "React", "Python", "FastAPI", "Debugging"],
     tools: { ...allTools("ask"), readRepo: "allow", editFiles: "allow", runTests: "allow", webSearch: "block" },
     idleLines: ["I should refactor that...", "Maybe I should check the logs.", "That could probably be automated."],
@@ -284,10 +307,11 @@ export const roleTemplates: Record<AgentRole, Template> = {
     title: "QA Engineer",
     description: "Breaks things on purpose so users never do.",
     colour: "#14b8a6",
-    homeRoom: "developerZone",
+    homeRoom: "testingLab",
     traits: { creativity: 50, rigor: 95, autonomy: 55, verbosity: 50, caution: 85, collaboration: 60 },
     tone: "direct",
     quirks: ["Sceptical", "Perfectionist"],
+    interests: ["Puzzles", "Board games"],
     skills: ["Unit testing", "E2E testing", "Debugging", "Performance"],
     tools: { ...allTools("block"), readRepo: "allow", runTests: "allow", terminal: "ask" },
     idleLines: ["What if the input is empty?", "That edge case worries me.", "Green tests, happy tester."],
@@ -301,6 +325,7 @@ export const roleTemplates: Record<AgentRole, Template> = {
     traits: { creativity: 90, rigor: 60, autonomy: 60, verbosity: 55, caution: 40, collaboration: 80 },
     tone: "playful",
     quirks: ["Optimistic", "Detail-oriented"],
+    interests: ["Photography", "Art galleries"],
     skills: ["UI design", "UX writing", "Design systems", "Accessibility"],
     tools: { ...allTools("block"), readRepo: "allow", editFiles: "ask" },
     idleLines: ["That button needs more breathing room.", "What would delight the user here?"],
@@ -314,6 +339,7 @@ export const roleTemplates: Record<AgentRole, Template> = {
     traits: { creativity: 50, rigor: 50, autonomy: 50, verbosity: 50, caution: 50, collaboration: 50 },
     tone: "professional",
     quirks: [],
+    interests: [],
     skills: [],
     tools: { ...allTools("ask"), readRepo: "allow" },
     idleLines: [],
@@ -348,6 +374,7 @@ export function applyTemplate(profile: AgentProfile, role: AgentRole): AgentProf
     traits: { ...template.traits },
     tools: { ...template.tools },
     quirks: [...template.quirks],
+    interests: [...template.interests],
     skills: [...template.skills],
     idleLines: [...template.idleLines],
   };
@@ -368,6 +395,7 @@ export function createProfile(role: AgentRole = "custom", name = ""): AgentProfi
     traits: { ...roleTemplates.custom.traits },
     tone: "professional",
     quirks: [],
+    interests: [],
     skills: [],
     tools: { ...roleTemplates.custom.tools },
     model: { provider: "claude", id: "claude-sonnet-5-5", temperature: 0.4, maxTokens: 4096, memory: true },
@@ -465,6 +493,10 @@ export function buildSystemPrompt(profile: AgentProfile): string {
     lines.push(`- ${toolInfo[id].label}: you ${permissionWords[profile.tools[id]]}.`);
   }
 
+  if (profile.interests.length) {
+    lines.push("", "## Outside work", `You're into ${listWords(profile.interests)}. It comes up when you chat with colleagues.`);
+  }
+
   lines.push(
     "",
     "## Working rules",
@@ -476,6 +508,12 @@ export function buildSystemPrompt(profile: AgentProfile): string {
   return lines.join("\n");
 }
 
+// "a, b and c"
+export function listWords(items: string[]) {
+  const words = items.map((item) => item.toLowerCase());
+  return words.length > 1 ? `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}` : words.join("");
+}
+
 export function withGeneratedPrompt(profile: AgentProfile): AgentProfile {
   if (profile.systemPromptMode === "custom") return profile;
   return { ...profile, systemPrompt: buildSystemPrompt(profile) };
@@ -483,23 +521,4 @@ export function withGeneratedPrompt(profile: AgentProfile): AgentProfile {
 
 export function estimateTokens(text: string) {
   return Math.ceil(text.length / 4);
-}
-
-// ─────────────────────────────
-// Phaser bridge
-// ─────────────────────────────
-
-export function profileToAgentConfig(
-  profile: AgentProfile,
-  x?: number,
-  y?: number
-): AgentConfig {
-  const room = rooms[profile.homeRoom];
-  return {
-    name: profile.name,
-    x: x ?? room.entrance.x,
-    y: y ?? room.entrance.y,
-    colour: parseInt(profile.colour.replace("#", ""), 16),
-    startingRoom: profile.homeRoom,
-  };
 }
