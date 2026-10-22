@@ -1,11 +1,13 @@
 import { useMemo, useState, type ChangeEvent, type ReactNode } from "react";
 
+import { displayModel, useOllamaStatus } from "../../ai/ollama";
 import { Avatar } from "../agents/Avatar";
 import {
   applyTemplate,
   buildSystemPrompt,
   estimateTokens,
   modelOptions,
+  interestSuggestions,
   quirkSuggestions,
   randomAvatar,
   roleIds,
@@ -304,7 +306,7 @@ function AppearanceStep({
         </div>
 
         <div className="avatar-controls">
-          <Field label="Accent colour" hint="Used for the office label, status ring and Phaser sprite.">
+          <Field label="Accent colour" hint="Used for the office label and status ring.">
             <Swatches values={swatches.colour} value={draft.colour} onChange={(colour) => patch({ colour })} />
           </Field>
           <Field label="Skin">
@@ -341,7 +343,21 @@ function AppearanceStep({
 
 function PersonalityStep({ draft, patch }: StepProps) {
   const [customQuirk, setCustomQuirk] = useState("");
+  const [customInterest, setCustomInterest] = useState("");
   const [newLine, setNewLine] = useState("");
+
+  const toggleInterest = (interest: string) =>
+    patch({
+      interests: draft.interests.includes(interest)
+        ? draft.interests.filter((i) => i !== interest)
+        : [...draft.interests, interest],
+    });
+
+  const addInterest = () => {
+    const value = customInterest.trim();
+    if (value && !draft.interests.includes(value)) patch({ interests: [...draft.interests, value] });
+    setCustomInterest("");
+  };
 
   const toggleQuirk = (quirk: string) =>
     patch({
@@ -363,6 +379,7 @@ function PersonalityStep({ draft, patch }: StepProps) {
   };
 
   const quirkOptions = Array.from(new Set([...quirkSuggestions, ...draft.quirks]));
+  const interestOptions = Array.from(new Set([...draft.interests, ...interestSuggestions]));
 
   return (
     <>
@@ -429,6 +446,25 @@ function PersonalityStep({ draft, patch }: StepProps) {
         </div>
         <form className="inline-add" onSubmit={(e) => { e.preventDefault(); addQuirk(); }}>
           <input id="custom-quirk" className="input" placeholder="Add your own tag" value={customQuirk} onChange={(e) => setCustomQuirk(e.target.value)} />
+          <button className="btn secondary small" type="submit"><Icon name="plus" size={15} /> Add</button>
+        </form>
+      </Field>
+
+      <Field label="Hobbies and interests" hint="What they chat about in the lounge when there's no work on.">
+        <div className="chip-wrap">
+          {interestOptions.map((interest) => (
+            <button
+              key={interest}
+              className={`chip ${draft.interests.includes(interest) ? "on" : ""}`}
+              onClick={() => toggleInterest(interest)}
+              aria-pressed={draft.interests.includes(interest)}
+            >
+              {interest}
+            </button>
+          ))}
+        </div>
+        <form className="inline-add" onSubmit={(e) => { e.preventDefault(); addInterest(); }}>
+          <input id="custom-interest" className="input" placeholder="e.g. Salsa dancing" value={customInterest} onChange={(e) => setCustomInterest(e.target.value)} />
           <button className="btn secondary small" type="submit"><Icon name="plus" size={15} /> Add</button>
         </form>
       </Field>
@@ -548,6 +584,18 @@ function SkillsStep({ draft, patch }: StepProps) {
 function ModelStep({ draft, patch }: StepProps) {
   const { model } = draft;
   const setModel = (changes: Partial<AgentProfile["model"]>) => patch({ model: { ...model, ...changes } });
+  const ollama = useOllamaStatus();
+
+  // Local models are whatever Ollama has installed (falls back to suggestions).
+  const installed =
+    ollama.state === "online" && ollama.models.length
+      ? ollama.models.map((name) => ({ id: `ollama:${displayModel(name)}`, label: `Ollama · ${displayModel(name)}` }))
+      : modelOptions.local;
+  const optionsFor = (provider: ModelProvider) => (provider === "local" ? installed : modelOptions[provider]);
+  const options = optionsFor(model.provider);
+  const listed = options.some((m) => m.id === model.id)
+    ? options
+    : [...options, { id: model.id, label: `${model.id.replace(/^ollama:/, "Ollama · ")} (not installed)` }];
 
   const providers: { id: ModelProvider; label: string; note: string }[] = [
     { id: "claude", label: "Claude", note: "Recommended" },
@@ -557,7 +605,10 @@ function ModelStep({ draft, patch }: StepProps) {
 
   return (
     <>
-      <StepHeader title="Model" text="Choose the engine behind this agent. Nothing is called until the backend is connected." />
+      <StepHeader
+        title="Model"
+        text="Choose the engine behind this agent. Local models run through Ollama on this machine. Claude and Codex aren't connected yet, so for now those agents answer with your first Ollama model."
+      />
 
       <Field label="Provider">
         <div className="provider-grid">
@@ -565,7 +616,7 @@ function ModelStep({ draft, patch }: StepProps) {
             <button
               key={p.id}
               className={`role-card ${model.provider === p.id ? "active" : ""}`}
-              onClick={() => setModel({ provider: p.id, id: modelOptions[p.id][0].id })}
+              onClick={() => setModel({ provider: p.id, id: optionsFor(p.id)[0].id })}
             >
               <strong>{p.label}</strong>
               <small>{p.note}</small>
@@ -576,7 +627,7 @@ function ModelStep({ draft, patch }: StepProps) {
 
       <Field label="Model" htmlFor="agent-model">
         <select id="agent-model" className="input" value={model.id} onChange={(e) => setModel({ id: e.target.value })}>
-          {modelOptions[model.provider].map((m) => (
+          {listed.map((m) => (
             <option key={m.id} value={m.id}>{m.label}</option>
           ))}
         </select>

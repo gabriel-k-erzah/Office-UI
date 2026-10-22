@@ -1,55 +1,100 @@
-import type { ReactNode } from "react";
+import { memo, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
 
-import type { RoomName } from "../../game/rooms/roomConfig";
 import { Avatar } from "../agents/Avatar";
 import type { AgentProfile } from "../agents/profile";
+import type { AgentView, OfficeSim } from "../office/simulation";
 
-// Stylised 3/4 view of the office. In the full app this panel can host the
-// Phaser canvas instead; seats below mirror the rooms in roomConfig.ts.
+// Stylised 3/4 view of the office. The scenery is static SVG; agents are moved by
+// OfficeSim. Positions are written straight to the DOM each animation frame so
+// React only re-renders when something visible changes (activity, speech, walking).
 
-type Seat = { x: number; y: number; prefer?: AgentProfile["role"] };
-
-const seats: Record<RoomName | "lounge", Seat[]> = {
-  library: [{ x: 190, y: 214 }, { x: 96, y: 226 }],
-  meetingRoom: [{ x: 440, y: 222 }, { x: 560, y: 222 }, { x: 500, y: 236 }],
-  managerOffice: [{ x: 850, y: 200 }, { x: 740, y: 228 }],
-  developerZone: [
-    { x: 120, y: 470 },
-    { x: 290, y: 470 },
-    { x: 770, y: 474, prefer: "tester" },
-    { x: 890, y: 474, prefer: "tester" },
-  ],
-  lounge: [{ x: 460, y: 520 }, { x: 545, y: 520 }, { x: 500, y: 410 }],
+type OfficeViewProps = {
+  // Owned by the dashboard so other panels (e.g. team chat) can drive agents.
+  sim: OfficeSim;
+  agents: AgentProfile[];
+  selectedId?: string;
+  onSelect: (id: string) => void;
 };
 
-type Placed = { agent: AgentProfile; x: number; y: number };
+export function OfficeView({ sim, agents, selectedId, onSelect }: OfficeViewProps) {
+  const views = useSyncExternalStore(sim.subscribe, sim.getSnapshot);
+  const layerRef = useRef<SVGGElement>(null);
+  const byId = new Map(agents.map((a) => [a.id, a]));
 
-function placeAgents(agents: AgentProfile[]): Placed[] {
-  const taken = new Set<string>();
-  const placed: Placed[] = [];
-  const key = (room: string, i: number) => `${room}:${i}`;
+  useEffect(() => {
+    sim.sync(agents);
+  }, [sim, agents]);
 
-  const take = (agent: AgentProfile, room: RoomName | "lounge", preferredOnly: boolean) => {
-    const list = seats[room];
-    for (let i = 0; i < list.length; i++) {
-      const seat = list[i];
-      if (taken.has(key(room, i))) continue;
-      if (preferredOnly && seat.prefer !== agent.role) continue;
-      if (!preferredOnly && seat.prefer && seat.prefer !== agent.role) continue;
-      taken.add(key(room, i));
-      placed.push({ agent, x: seat.x, y: seat.y });
-      return true;
-    }
-    return false;
-  };
+  useEffect(() => {
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const applyMotion = () => sim.setReducedMotion(reduceMotion.matches);
+    applyMotion();
+    reduceMotion.addEventListener("change", applyMotion);
 
-  const remaining = agents.filter((a) => !take(a, a.homeRoom, true));
-  const overflow = remaining.filter((a) => !take(a, a.homeRoom, false));
-  const leftover = overflow.filter((a) => !take(a, "lounge", false));
-  leftover.forEach((agent, i) => placed.push({ agent, x: 420 + (i % 4) * 50, y: 470 + Math.floor(i / 4) * 30 }));
+    let frame = 0;
+    let last = performance.now();
+    const loop = (time: number) => {
+      // Clamp so a backgrounded tab doesn't teleport everyone on return.
+      sim.tick(Math.min(time - last, 100));
+      last = time;
+      paint(layerRef.current, sim);
+      frame = requestAnimationFrame(loop);
+    };
+    frame = requestAnimationFrame(loop);
 
-  return placed.sort((a, b) => a.y - b.y);
+    return () => {
+      cancelAnimationFrame(frame);
+      reduceMotion.removeEventListener("change", applyMotion);
+    };
+  }, [sim]);
+
+  return (
+    <svg className="office-svg" viewBox="0 0 1000 580" role="img" aria-label="Office floor with agents moving between rooms">
+      <Scenery />
+
+      <g ref={layerRef}>
+        {views.map((view) => {
+          const agent = byId.get(view.id);
+          if (!agent) return null;
+          return (
+            <AgentToken
+              key={view.id}
+              agent={agent}
+              view={view}
+              selected={view.id === selectedId}
+              onSelect={() => onSelect(view.id)}
+              place={(node) => {
+                const at = node && sim.position(view.id);
+                if (at) node.setAttribute("transform", translate(at.x, at.y));
+              }}
+            />
+          );
+        })}
+      </g>
+    </svg>
+  );
 }
+
+const translate = (x: number, y: number) => `translate(${x.toFixed(1)} ${y.toFixed(1)})`;
+
+// Move every token to its simulated position and keep them in y order so agents
+// further down the floor are drawn in front.
+function paint(layer: SVGGElement | null, sim: OfficeSim) {
+  if (!layer) return;
+  const placed = Array.from(layer.children as HTMLCollectionOf<SVGGElement>).map((node) => {
+    const at = sim.position(node.dataset.agent ?? "");
+    if (at) node.setAttribute("transform", translate(at.x, at.y));
+    return { node, y: at?.y ?? 0 };
+  });
+  const sorted = [...placed].sort((a, b) => a.y - b.y);
+  if (sorted.some((entry, i) => entry.node !== placed[i].node)) {
+    sorted.forEach(({ node }) => layer.appendChild(node));
+  }
+}
+
+// ─────────────────────────────
+// Agent token (drawn around 0,0 = the agent's feet)
+// ─────────────────────────────
 
 const statusColour: Record<AgentProfile["status"], string> = {
   working: "#22c55e",
@@ -57,17 +102,85 @@ const statusColour: Record<AgentProfile["status"], string> = {
   offline: "#334155",
 };
 
-type OfficeViewProps = {
-  agents: AgentProfile[];
-  selectedId?: string;
-  onSelect: (id: string) => void;
-};
+function AgentToken({
+  agent,
+  view,
+  selected,
+  onSelect,
+  place,
+}: {
+  agent: AgentProfile;
+  view: AgentView;
+  selected: boolean;
+  onSelect: () => void;
+  place: (node: SVGGElement | null) => void;
+}) {
+  const line = view.speech ? `“${view.speech}”` : view.activity || "Idle";
+  const width = Math.max(agent.name.length * 8.4, line.length * 6.2) + 22;
+  const labelY = -112;
+  // Visiting another room (e.g. round the meeting table) only shows a name tag
+  // so labels don't pile up; hover, focus, selection or speech shows the full one.
+  const compact = view.away && !view.walking && !view.speech && !selected;
+  const tagWidth = agent.name.length * 6.4 + 14;
 
-export function OfficeView({ agents, selectedId, onSelect }: OfficeViewProps) {
-  const placed = placeAgents(agents.filter((a) => a.status !== "offline"));
+  const classes = [
+    "agent-token",
+    agent.status,
+    view.walking && "walking",
+    compact && "compact",
+    selected && "selected",
+  ].filter(Boolean);
 
   return (
-    <svg className="office-svg" viewBox="0 0 1000 580" role="img" aria-label="Office floor with agents at their desks">
+    <g
+      ref={place}
+      data-agent={agent.id}
+      className={classes.join(" ")}
+      onClick={onSelect}
+      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onSelect()}
+      tabIndex={0}
+      role="button"
+      aria-label={`${agent.name}, ${line}`}
+    >
+      <ellipse cx={0} cy={2} rx="20" ry="6" fill="#000" opacity="0.35" />
+      {selected && <ellipse className="select-ring" cx={0} cy={2} rx="28" ry="9" fill="none" stroke={agent.colour} strokeWidth="2" />}
+      <g className="bob">
+        <rect x={-13} y={-30} width="26" height="30" rx="10" fill={agent.avatar.outfit} />
+        <rect x={-13} y={-30} width="26" height="30" rx="10" fill="url(#bodyShade)" />
+        <g transform="translate(-19 -64)">
+          <Avatar avatar={agent.avatar} size={38} ring={agent.colour} />
+        </g>
+        <circle cx={15} cy={-60} r="5" fill={statusColour[agent.status]} stroke="#0b1324" strokeWidth="2" />
+      </g>
+
+      <g className="agent-label">
+        <rect x={-width / 2} y={labelY} width={width} height="36" rx="7" fill="#0b1220" fillOpacity="0.86" stroke="#ffffff" strokeOpacity="0.08" />
+        <path d={`M-5 ${labelY + 36} L0 ${labelY + 42} L5 ${labelY + 36} Z`} fill="#0b1220" fillOpacity="0.86" />
+        <text x={-width / 2 + 11} y={labelY + 15} className="agent-label-name">
+          {agent.name}
+        </text>
+        <text x={-width / 2 + 11} y={labelY + 29} className={`agent-label-status ${view.speech ? "speech" : ""}`}>
+          {line}
+        </text>
+      </g>
+
+      <g className="agent-name-tag">
+        <rect x={-tagWidth / 2} y={8} width={tagWidth} height="16" rx="8" fill="#0b1220" fillOpacity="0.8" />
+        <text x={0} y={20} textAnchor="middle">
+          {agent.name}
+        </text>
+      </g>
+    </g>
+  );
+}
+
+// ─────────────────────────────
+// Scenery (static, rendered once)
+// ─────────────────────────────
+
+const Scenery = memo(function Scenery() {
+  return (
+    <>
       <Defs />
 
       {/* Base and back wall */}
@@ -84,6 +197,12 @@ export function OfficeView({ agents, selectedId, onSelect }: OfficeViewProps) {
       <rect x="390" y="292" width="220" height="270" fill="url(#woodLight)" />
       <rect x="620" y="292" width="360" height="270" fill="url(#tiles)" />
 
+      {/* Corridor and doorways (see rooms.ts) */}
+      <rect x="10" y="272" width="980" height="20" fill="#202a40" />
+      <Doorway x={260} />
+      <Doorway x={470} />
+      <Doorway x={780} />
+
       <Library />
       <MeetingRoom />
       <ManagerOffice />
@@ -91,17 +210,19 @@ export function OfficeView({ agents, selectedId, onSelect }: OfficeViewProps) {
       <Lounge />
       <TestingLab />
 
-      {/* Partition walls */}
+      {/* Partition walls, with gaps for the doors */}
       <Wall x={340} y={30} w={10} d={232} />
       <Wall x={650} y={30} w={10} d={232} />
-      <Wall x={380} y={278} w={10} d={286} />
-      <Wall x={610} y={278} w={10} d={286} />
+      <Wall x={380} y={320} w={10} d={244} />
+      <Wall x={610} y={320} w={10} d={244} />
       <Wall x={10} y={262} w={150} d={10} h={26} />
-      <Glass x={160} y={262} w={120} />
-      <Wall x={360} y={262} w={60} d={10} h={26} />
-      <Glass x={420} y={262} w={160} />
-      <Wall x={580} y={262} w={60} d={10} h={26} />
-      <Glass x={720} y={262} w={120} />
+      <Glass x={160} y={262} w={100} />
+      <Wall x={320} y={262} w={50} d={10} h={26} />
+      <Glass x={370} y={262} w={100} />
+      <Glass x={530} y={262} w={100} />
+      <Wall x={630} y={262} w={60} d={10} h={26} />
+      <Glass x={690} y={262} w={90} />
+      <Glass x={840} y={262} w={60} />
       <Wall x={900} y={262} w={90} d={10} h={26} />
 
       {/* Warm light pools */}
@@ -120,74 +241,12 @@ export function OfficeView({ agents, selectedId, onSelect }: OfficeViewProps) {
       <RoomTag x={34} y={306} label="Developer zone" />
       <RoomTag x={404} y={536} label="Lounge" />
       <RoomTag x={850} y={306} label="Testing lab" />
-
-      {placed.map(({ agent, x, y }) => (
-        <AgentToken
-          key={agent.id}
-          agent={agent}
-          x={x}
-          y={y}
-          selected={agent.id === selectedId}
-          onSelect={() => onSelect(agent.id)}
-        />
-      ))}
-    </svg>
+    </>
   );
-}
+});
 
-// ─────────────────────────────
-// Agent token
-// ─────────────────────────────
-
-function AgentToken({
-  agent,
-  x,
-  y,
-  selected,
-  onSelect,
-}: {
-  agent: AgentProfile;
-  x: number;
-  y: number;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  const label = agent.activity || "Idle";
-  const width = Math.max(agent.name.length * 8.4, label.length * 6.2) + 22;
-  const labelY = y - 112;
-
-  return (
-    <g
-      className={`agent-token ${agent.status} ${selected ? "selected" : ""}`}
-      onClick={onSelect}
-      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onSelect()}
-      tabIndex={0}
-      role="button"
-      aria-label={`${agent.name}, ${label}`}
-    >
-      <ellipse cx={x} cy={y + 2} rx="20" ry="6" fill="#000" opacity="0.35" />
-      {selected && <ellipse className="select-ring" cx={x} cy={y + 2} rx="28" ry="9" fill="none" stroke={agent.colour} strokeWidth="2" />}
-      <g className="bob">
-        <rect x={x - 13} y={y - 30} width="26" height="30" rx="10" fill={agent.avatar.outfit} />
-        <rect x={x - 13} y={y - 30} width="26" height="30" rx="10" fill="url(#bodyShade)" />
-        <g transform={`translate(${x - 19},${y - 64})`}>
-          <Avatar avatar={agent.avatar} size={38} ring={agent.colour} />
-        </g>
-        <circle cx={x + 15} cy={y - 60} r="5" fill={statusColour[agent.status]} stroke="#0b1324" strokeWidth="2" />
-      </g>
-
-      <g className="agent-label">
-        <rect x={x - width / 2} y={labelY} width={width} height="36" rx="7" fill="#0b1220" fillOpacity="0.86" stroke="#ffffff" strokeOpacity="0.08" />
-        <path d={`M${x - 5} ${labelY + 36} L${x} ${labelY + 42} L${x + 5} ${labelY + 36} Z`} fill="#0b1220" fillOpacity="0.86" />
-        <text x={x - width / 2 + 11} y={labelY + 15} className="agent-label-name">
-          {agent.name}
-        </text>
-        <text x={x - width / 2 + 11} y={labelY + 29} className="agent-label-status">
-          {label}
-        </text>
-      </g>
-    </g>
-  );
+function Doorway({ x }: { x: number }) {
+  return <rect x={x} y={246} width="60" height="26" fill="#2a3550" opacity="0.6" />;
 }
 
 // ─────────────────────────────
@@ -413,13 +472,14 @@ function DeveloperZone() {
 function Lounge() {
   return (
     <g>
+      {/* Planter sits clear of the corridor, with room to walk past either end */}
       <g>
-        <Box x={400} y={306} w={200} d={34} h={34} top="#2f3a52" front="#202839" />
-        {[410, 440, 470, 500, 530, 560, 585].map((cx, i) => (
-          <circle key={cx} cx={cx} cy={272 + (i % 2) * 6} r="14" fill={i % 2 ? "#26803f" : "#1f6b3a"} />
+        <Box x={430} y={324} w={140} d={34} h={34} top="#2f3a52" front="#202839" />
+        {[440, 468, 496, 524, 552].map((cx, i) => (
+          <circle key={cx} cx={cx} cy={292 + (i % 2) * 5} r="12" fill={i % 2 ? "#26803f" : "#1f6b3a"} />
         ))}
-        <path d="M454 330 L460 318 L466 330 M456.5 326 H463.5" stroke="#60a5fa" strokeWidth="1.8" fill="none" />
-        <text x="472" y="330" className="planter-title">AI Ecosystem</text>
+        <path d="M446 348 L452 336 L458 348 M448.5 344 H455.5" stroke="#60a5fa" strokeWidth="1.8" fill="none" />
+        <text x="464" y="348" className="planter-title">AI Ecosystem</text>
       </g>
       <Rug cx={500} cy={470} rx={92} ry={40} fill="#8a6a4a" />
       <g>
