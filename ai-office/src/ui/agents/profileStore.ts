@@ -12,6 +12,7 @@ import {
 } from "./profile";
 
 const storageKey = "ai-office.agents.v1";
+const librarianKey = "ai-office.librarian-added";
 
 function seed(
   role: AgentRole,
@@ -38,6 +39,7 @@ const seededInterests: Record<string, string[]> = {
   agent_leo: ["Retro gaming", "Bouldering", "Mechanical keyboards", "Sci-fi films"],
   agent_tess: ["Escape rooms", "Trail running", "Board games", "True-crime podcasts"],
   agent_nova: ["Film photography", "Pottery", "Indie gigs", "Houseplants"],
+  agent_ada: ["Crosswords", "Calligraphy", "Victorian novels", "Canal walks"],
 };
 
 export const FREE_ACTIVITY = "Between projects";
@@ -65,7 +67,15 @@ export function seedProfiles(): AgentProfile[] {
       interests: seededInterests.agent_nova,
       avatar: { ...createProfile("designer").avatar, skin: "#eebc94", background: "#3f1d2e" },
     }),
+    seedLibrarian(),
   ];
+}
+
+function seedLibrarian() {
+  return seed("librarian", "Ada", "idle", FREE_ACTIVITY, {
+    interests: seededInterests.agent_ada,
+    avatar: { ...createProfile("librarian").avatar, skin: "#7a4a2c", hairColour: "#9aa3b2", background: "#5b3412" },
+  });
 }
 
 // Activities from the old demo project ("Crypto Dashboard").
@@ -93,6 +103,14 @@ function upgrade(saved: AgentProfile): AgentProfile {
   if (demoActivities.has(profile.activity) || (profile.activity === "Idle" && seededInterests[profile.id])) {
     profile = { ...profile, status: profile.status === "offline" ? "offline" : "idle", activity: FREE_ACTIVITY };
   }
+  // Library tools arrived later: everyone may read; only librarians may write.
+  const savedTools: Partial<AgentProfile["tools"]> = profile.tools;
+  if (!savedTools.libraryRead) {
+    profile = {
+      ...profile,
+      tools: { ...profile.tools, libraryRead: "allow", libraryWrite: profile.role === "librarian" ? "allow" : "block" },
+    };
+  }
   // Generated prompts are rebuilt so they pick up wording changes (custom ones are left alone).
   return withGeneratedPrompt(profile);
 }
@@ -102,7 +120,16 @@ function load(): AgentProfile[] {
     const raw = localStorage.getItem(storageKey);
     if (raw) {
       const parsed = JSON.parse(raw) as AgentProfile[];
-      if (Array.isArray(parsed) && parsed.length) return parsed.map(upgrade);
+      if (Array.isArray(parsed) && parsed.length) {
+        const profiles = parsed.map(upgrade);
+        // The library needs a keeper: offices saved before librarians existed get
+        // Ada, once (if you remove her later she stays removed).
+        if (!localStorage.getItem(librarianKey) && !profiles.some((p) => p.role === "librarian")) {
+          profiles.push(seedLibrarian());
+        }
+        localStorage.setItem(librarianKey, "1");
+        return profiles;
+      }
     }
   } catch {
     // Storage can be unavailable (private mode, sandboxed frames).

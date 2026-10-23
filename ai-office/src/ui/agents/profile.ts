@@ -10,6 +10,7 @@ export type AgentRole =
   | "developer"
   | "tester"
   | "designer"
+  | "librarian"
   | "custom";
 
 export type ToneId =
@@ -37,7 +38,9 @@ export type ToolId =
   | "terminal"
   | "webSearch"
   | "delegate"
-  | "github";
+  | "github"
+  | "libraryRead"
+  | "libraryWrite";
 
 export type ModelProvider = "claude" | "codex" | "local";
 
@@ -163,7 +166,19 @@ export const toolInfo: Record<ToolId, { label: string; detail: string }> = {
   webSearch: { label: "Web search", detail: "Look things up on the internet" },
   delegate: { label: "Delegate tasks", detail: "Create and assign tasks to other agents" },
   github: { label: "GitHub", detail: "Open branches and pull requests" },
+  libraryRead: { label: "Read the library", detail: "Read the team's .md documents" },
+  libraryWrite: { label: "Write to the library", detail: "File and update .md documents (librarian only)" },
 };
+
+// The library has one keeper: only librarians can ever write to it, whatever
+// the permission says. Everyone else asks the librarian.
+export const canWriteLibrary = (profile: AgentProfile) =>
+  profile.role === "librarian" && profile.tools.libraryWrite !== "block";
+
+export const canReadLibrary = (profile: AgentProfile) => profile.tools.libraryRead !== "block";
+
+// Managers (or anyone allowed to delegate) can turn goals into tasks.
+export const canDelegate = (profile: AgentProfile) => profile.tools.delegate === "allow";
 
 export const toolIds = Object.keys(toolInfo) as ToolId[];
 
@@ -227,6 +242,7 @@ export const roleInfo: Record<AgentRole, { label: string; summary: string }> = {
   developer: { label: "Developer", summary: "Reads and edits code, runs tests, reports outcomes." },
   tester: { label: "Tester", summary: "Writes and runs tests, hunts for regressions." },
   designer: { label: "Designer", summary: "Shapes interfaces, flows and visual polish." },
+  librarian: { label: "Librarian", summary: "Keeps the library: files, organises and writes the team's documents." },
   custom: { label: "Custom", summary: "Start from a blank slate." },
 };
 
@@ -271,7 +287,7 @@ export const roleTemplates: Record<AgentRole, Template> = {
     quirks: ["Big-picture", "Calm under pressure"],
     interests: ["Chess", "Podcasts"],
     skills: ["Task breakdown", "Prioritisation", "Code review", "Reporting"],
-    tools: { ...allTools("block"), readRepo: "allow", delegate: "allow", github: "ask" },
+    tools: { ...allTools("block"), readRepo: "allow", delegate: "allow", github: "ask", libraryRead: "allow", libraryWrite: "block" },
     idleLines: ["What's everyone working on?", "We should review our priorities.", "Let's keep things moving."],
     avatar: { outfit: "#334155", hair: "side", accessory: "none" },
   },
@@ -285,7 +301,7 @@ export const roleTemplates: Record<AgentRole, Template> = {
     quirks: ["Curious", "Data-driven"],
     interests: ["Reading", "Museums"],
     skills: ["API research", "Documentation", "Summarising", "Fact checking"],
-    tools: { ...allTools("block"), readRepo: "allow", webSearch: "allow" },
+    tools: { ...allTools("block"), readRepo: "allow", webSearch: "allow", libraryRead: "allow", libraryWrite: "block" },
     idleLines: ["Interesting...", "I wonder what the data says.", "There might be another approach."],
     avatar: { outfit: "#22a06b", hair: "long", accessory: "none" },
   },
@@ -299,7 +315,7 @@ export const roleTemplates: Record<AgentRole, Template> = {
     quirks: ["Pragmatic", "Detail-oriented"],
     interests: ["Video games", "Side projects"],
     skills: ["TypeScript", "React", "Python", "FastAPI", "Debugging"],
-    tools: { ...allTools("ask"), readRepo: "allow", editFiles: "allow", runTests: "allow", webSearch: "block" },
+    tools: { ...allTools("ask"), readRepo: "allow", editFiles: "allow", runTests: "allow", webSearch: "block", libraryRead: "allow", libraryWrite: "block" },
     idleLines: ["I should refactor that...", "Maybe I should check the logs.", "That could probably be automated."],
     avatar: { outfit: "#2f6bff", hair: "short", accessory: "headset" },
   },
@@ -313,7 +329,7 @@ export const roleTemplates: Record<AgentRole, Template> = {
     quirks: ["Sceptical", "Perfectionist"],
     interests: ["Puzzles", "Board games"],
     skills: ["Unit testing", "E2E testing", "Debugging", "Performance"],
-    tools: { ...allTools("block"), readRepo: "allow", runTests: "allow", terminal: "ask" },
+    tools: { ...allTools("block"), readRepo: "allow", runTests: "allow", terminal: "ask", libraryRead: "allow", libraryWrite: "block" },
     idleLines: ["What if the input is empty?", "That edge case worries me.", "Green tests, happy tester."],
     avatar: { outfit: "#0ea5b7", hair: "buzz", accessory: "glasses" },
   },
@@ -327,9 +343,23 @@ export const roleTemplates: Record<AgentRole, Template> = {
     quirks: ["Optimistic", "Detail-oriented"],
     interests: ["Photography", "Art galleries"],
     skills: ["UI design", "UX writing", "Design systems", "Accessibility"],
-    tools: { ...allTools("block"), readRepo: "allow", editFiles: "ask" },
+    tools: { ...allTools("block"), readRepo: "allow", editFiles: "ask", libraryRead: "allow", libraryWrite: "block" },
     idleLines: ["That button needs more breathing room.", "What would delight the user here?"],
     avatar: { outfit: "#8b5cf6", hair: "curly", accessory: "beanie", hairColour: "#7c5cff" },
+  },
+  librarian: {
+    title: "Librarian",
+    description: "Keeps the team's library tidy. Turns colleagues' notes into clear, well-organised documents and files them.",
+    colour: "#d97706",
+    homeRoom: "library",
+    traits: { creativity: 45, rigor: 90, autonomy: 55, verbosity: 60, caution: 75, collaboration: 85 },
+    tone: "friendly",
+    quirks: ["Detail-oriented", "Mentor"],
+    interests: ["Reading", "Calligraphy"],
+    skills: ["Documentation", "Summarising", "Fact checking"],
+    tools: { ...allTools("block"), libraryRead: "allow", libraryWrite: "allow" },
+    idleLines: ["Everything in its right place.", "That shelf needs reindexing.", "Has anyone returned the style guide?"],
+    avatar: { outfit: "#b45309", hair: "bun", accessory: "glasses" },
   },
   custom: {
     title: "",
@@ -341,7 +371,7 @@ export const roleTemplates: Record<AgentRole, Template> = {
     quirks: [],
     interests: [],
     skills: [],
-    tools: { ...allTools("ask"), readRepo: "allow" },
+    tools: { ...allTools("ask"), readRepo: "allow", libraryRead: "allow", libraryWrite: "block" },
     idleLines: [],
     avatar: {},
   },
@@ -482,7 +512,7 @@ export function buildSystemPrompt(profile: AgentProfile): string {
   }
 
   const tone = toneInfo[profile.tone];
-  lines.push("", "## Tone", `${tone.label}. ${tone.description}`, `Example: "${tone.sample}"`);
+  lines.push("", "## Tone", `${tone.label}. ${tone.description}`, `For the feel of it (never repeat this line): "${tone.sample}"`);
 
   if (profile.skills.length) {
     lines.push("", "## Expertise", profile.skills.map((skill) => `- ${skill}`).join("\n"));
@@ -502,7 +532,10 @@ export function buildSystemPrompt(profile: AgentProfile): string {
     "## Working rules",
     "- Communicate with other agents only through explicit tasks and events.",
     "- Report status, outputs and failures so the office can display them.",
-    "- Never expose credentials or run destructive commands without approval."
+    "- Never expose credentials or run destructive commands without approval.",
+    profile.role === "librarian"
+      ? "- You keep the library. Colleagues bring you notes; you turn them into clear Markdown documents and file them."
+      : "- The library is kept by the librarian. You can read it, but to document something you take your notes to the librarian in the library."
   );
 
   return lines.join("\n");

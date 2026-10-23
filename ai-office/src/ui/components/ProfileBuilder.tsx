@@ -563,16 +563,20 @@ function SkillsStep({ draft, patch }: StepProps) {
                 <strong>{toolInfo[id].label}</strong>
                 <small>{toolInfo[id].detail}</small>
               </div>
-              <Segmented<ToolPermission>
-                label={toolInfo[id].label}
-                options={[
-                  { value: "allow", label: "Allow" },
-                  { value: "ask", label: "Ask" },
-                  { value: "block", label: "Block" },
-                ]}
-                value={draft.tools[id]}
-                onChange={(value) => patch({ tools: { ...draft.tools, [id]: value } })}
-              />
+              {id === "libraryWrite" && draft.role !== "librarian" ? (
+                <span className="perm-locked" title="Everyone else takes their notes to the librarian">Librarian only</span>
+              ) : (
+                <Segmented<ToolPermission>
+                  label={toolInfo[id].label}
+                  options={[
+                    { value: "allow", label: "Allow" },
+                    { value: "ask", label: "Ask" },
+                    { value: "block", label: "Block" },
+                  ]}
+                  value={draft.tools[id]}
+                  onChange={(value) => patch({ tools: { ...draft.tools, [id]: value } })}
+                />
+              )}
             </div>
           ))}
         </div>

@@ -1,9 +1,13 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { fileURLToPath } from 'node:url'
+
+import { libraryPlugin } from './server/library.ts'
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  // The library's .md files live in ./library (see server/library.ts).
+  plugins: [react(), libraryPlugin(fileURLToPath(new URL('./library', import.meta.url)))],
   server: {
     proxy: {
       // Local models: the browser talks to /ollama, Vite forwards to Ollama,

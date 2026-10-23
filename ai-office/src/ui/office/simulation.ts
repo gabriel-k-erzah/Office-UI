@@ -1,5 +1,6 @@
 import type { AgentProfile } from "../agents/profile";
 import {
+  CORRIDOR_Y,
   FRONT_DOOR,
   roomNames,
   rooms,
@@ -48,6 +49,8 @@ type SimAgent = {
   inMeeting: boolean;
   // Real work in progress (e.g. answering in team chat). Keeps them at their desk.
   task?: string;
+  // Where the task happens; their desk when unset.
+  taskRoom?: RoomName;
   // Held somewhere on purpose (e.g. chatting in the lounge) until released.
   engaged: boolean;
 };
@@ -139,19 +142,41 @@ export class OfficeSim {
   // the room; the agent finishes their current walk first.
   // The agent is busy with something real: they head to their desk (unless
   // they're in a stand-up) and show it until the task is cleared with null.
-  setTask(id: string, task: string | null) {
+  // `room` sends them somewhere else for it (e.g. the library to read).
+  setTask(id: string, task: string | null, room?: RoomName) {
     const agent = this.agents.get(id);
     if (!agent) return;
     agent.task = task ?? undefined;
+    agent.taskRoom = task && room !== agent.profile.homeRoom ? room : undefined;
 
-    if (agent.task && !agent.inMeeting && agent.at !== agent.homeSpot) {
-      this.goHome(agent);
+    if (agent.task && !agent.inMeeting && !this.atTaskPlace(agent)) {
+      this.goToTaskPlace(agent);
     } else if (!agent.path.length) {
       agent.activity = agent.task ?? this.activityAt(agent);
       agent.nextAt = this.now + between(4_000, 9_000);
     }
     this.changed = true;
     this.emit();
+  }
+
+  // Finished walking and standing in the room (for waiting on an errand).
+  isIn(id: string, room: RoomName) {
+    const agent = this.agents.get(id);
+    return !agent || (!agent.path.length && !agent.pending && agent.room === room);
+  }
+
+  private atTaskPlace(agent: SimAgent) {
+    if (agent.taskRoom) return agent.room === agent.taskRoom && agent.at !== null;
+    return agent.at !== null && agent.at === agent.homeSpot;
+  }
+
+  private goToTaskPlace(agent: SimAgent) {
+    if (!agent.taskRoom) {
+      this.goHome(agent);
+      return;
+    }
+    const spot = this.freeSpot(agent, agent.taskRoom, (s) => s.kind !== "desk") ?? this.freeSpot(agent, agent.taskRoom);
+    if (spot) this.goTo(agent, { room: agent.taskRoom, spot, activity: agent.task });
   }
 
   say(id: string, text: string, ms = 6_000) {
@@ -316,8 +341,8 @@ export class OfficeSim {
     agent.nextAt = this.now + 5_000;
     if (agent.inMeeting || agent.engaged) return;
     if (agent.task) {
-      // Busy: stay put, or get back to the desk if a stand-up pulled them away.
-      if (agent.at !== agent.homeSpot) this.goHome(agent);
+      // Busy: stay put, or get back to where the work is if a stand-up pulled them away.
+      if (!this.atTaskPlace(agent)) this.goToTaskPlace(agent);
       return;
     }
 
@@ -402,15 +427,16 @@ export class OfficeSim {
   private startMeeting() {
     const everyone = [...this.agents.values()];
     const host = everyone.find((a) => a.profile.role === "manager" && !a.engaged) ?? pick(everyone.filter((a) => !a.engaged));
-    // Wait for the host to be somewhere before they call everyone in.
-    if (!host || host.path.length) return;
+    // Wait for the host to be somewhere (and free) before they call everyone in.
+    if (!host || host.path.length || host.task) return;
 
     host.speech = "Quick stand-up, everyone!";
     host.speechUntil = this.now + 4_000;
 
     // Host first so they get the head of the table.
     for (const agent of [host, ...everyone.filter((a) => a !== host)]) {
-      if (agent.engaged) continue;
+      // People in the middle of something real (or a chat) skip it.
+      if (agent.engaged || (agent.task && agent !== host)) continue;
       agent.inMeeting = true;
       if (agent.at && spotOf(agent.at).room === "meetingRoom" && !agent.path.length) {
         // Already at the table (e.g. a designer whose desk is in here).
@@ -444,7 +470,26 @@ export class OfficeSim {
 
   private goTo(agent: SimAgent, destination: Destination, from: SimAgent["at"] | undefined = agent.at) {
     if (agent.path.length) {
-      agent.pending = destination;
+      // Mid-walk: already in the corridor → turn round on the spot; still in a
+      // room → carry on to the corridor and turn there. Past the corridor they're
+      // nearly at their destination, so they finish that walk and then go.
+      const inCorridor = agent.y === CORRIDOR_Y;
+      const corridor = inCorridor ? -1 : agent.path.findIndex((point) => point.y === CORRIDOR_Y);
+      if (!inCorridor && corridor < 0) {
+        agent.pending = destination;
+        return;
+      }
+      const target = spotOf(destination.spot);
+      agent.path = [...agent.path.slice(0, corridor + 1), ...route(null, target)].filter(
+        (point, i, all) => i === 0 || point.x !== all[i - 1].x || point.y !== all[i - 1].y
+      );
+      agent.pending = undefined;
+      agent.target = destination.spot;
+      agent.walkingTo = target.room;
+      agent.arrivalActivity = destination.activity;
+      agent.activity =
+        destination.spot === agent.homeSpot ? "Heading back to desk" : `Heading to the ${rooms[target.room].name.toLowerCase()}`;
+      this.changed = true;
       return;
     }
 
@@ -487,9 +532,14 @@ export class OfficeSim {
     const home = agent.profile.homeRoom;
     if (agent.homeSpot && spotOf(agent.homeSpot).room === home) return agent.homeSpot;
 
+    // Desks kept for a role (the library desk is the librarian's) go to them first;
+    // otherwise a free desk, then a seat, then anywhere in the room.
+    const fits = (s: Spot) => !s.prefer || s.prefer === agent.profile.role;
     agent.homeSpot =
-      this.freeSpot(agent, home, (s) => s.kind === "desk") ??
-      this.freeSpot(agent, home) ??
+      this.freeSpot(agent, home, (s) => s.kind === "desk" && s.prefer === agent.profile.role) ??
+      this.freeSpot(agent, home, (s) => s.kind === "desk" && fits(s)) ??
+      this.freeSpot(agent, home, (s) => s.kind === "seat" && fits(s)) ??
+      this.freeSpot(agent, home, fits) ??
       null;
     return agent.homeSpot;
   }

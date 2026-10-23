@@ -87,6 +87,7 @@ export async function streamChat({
   temperature,
   maxTokens,
   signal,
+  format,
   onToken,
 }: {
   model: string;
@@ -94,6 +95,8 @@ export async function streamChat({
   temperature: number;
   maxTokens: number;
   signal?: AbortSignal;
+  // A JSON schema: the reply is constrained to match it.
+  format?: object;
   onToken: (text: string) => void;
 }): Promise<string> {
   const response = await fetch(`${BASE}/api/chat`, {
@@ -104,6 +107,7 @@ export async function streamChat({
       model,
       messages,
       stream: true,
+      ...(format ? { format } : {}),
       options: { temperature, num_predict: maxTokens },
     }),
   });
@@ -137,4 +141,69 @@ export async function streamChat({
   }
 
   return full;
+}
+
+// ─────────────────────────────
+// Structured replies
+// ─────────────────────────────
+
+// Small local models can't call tools natively, so agents answer in JSON that
+// matches a schema (Ollama enforces it). `onField` streams one string field as
+// it's written, e.g. the chat reply, so people aren't left staring at dots.
+export async function chatJson<T>({
+  schema,
+  onField,
+  ...options
+}: {
+  model: string;
+  messages: OllamaMessage[];
+  temperature: number;
+  maxTokens: number;
+  signal?: AbortSignal;
+  schema: object;
+  onField?: { key: string; update: (text: string) => void };
+}): Promise<T> {
+  let last = "";
+  const raw = await streamChat({
+    ...options,
+    format: schema,
+    onToken: (full) => {
+      if (!onField) return;
+      const partial = partialString(full, onField.key);
+      if (partial !== undefined && partial !== last) {
+        last = partial;
+        onField.update(partial);
+      }
+    },
+  });
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    throw new Error("the model's answer was cut off before it finished");
+  }
+}
+
+// The value of a string field in JSON that's still being written.
+export function partialString(json: string, key: string): string | undefined {
+  const start = json.match(new RegExp(`"${key}"\\s*:\\s*"`));
+  if (!start || start.index === undefined) return undefined;
+  let raw = "";
+  for (let i = start.index + start[0].length; i < json.length; i++) {
+    const char = json[i];
+    if (char === "\\") {
+      if (i + 1 >= json.length) break;
+      raw += char + json[i + 1];
+      i++;
+      continue;
+    }
+    if (char === '"') break;
+    raw += char;
+  }
+  // Drop a half-written \u escape at the end before decoding.
+  raw = raw.replace(/\\u[0-9a-fA-F]{0,3}$/, "");
+  try {
+    return JSON.parse(`"${raw}"`) as string;
+  } catch {
+    return raw;
+  }
 }

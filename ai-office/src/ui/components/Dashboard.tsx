@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { displayModel, refreshOllamaStatus, resolveModel, streamChat, useOllamaStatus, type OllamaStatus } from "../../ai/ollama";
+import { displayModel, refreshOllamaStatus, useOllamaStatus, type OllamaStatus } from "../../ai/ollama";
 import { useLoungeChat } from "../../ai/loungeChat";
-import { buildChatPrompt, CHAT_MAX_TOKENS, cleanReply, excerpt } from "../../ai/teamChat";
+import { WorkEngine } from "../../work/engine";
+import { OfficeStore, useOffice } from "../../work/store";
 import { Avatar } from "../agents/Avatar";
 import {
   createProfile,
@@ -20,13 +21,14 @@ import { useAgentProfiles } from "../agents/profileStore";
 import {
   isActive,
   type ActivityItem,
-  type ChatMessage,
+  type LogEntry,
   type Task,
   type TaskPriority,
   type TaskStatus,
 } from "../data/types";
 import { Icon, type IconName } from "./Icon";
 import { OfficeSim } from "../office/simulation";
+import { LibraryPage } from "./LibraryPage";
 import { OfficeView } from "./OfficeView";
 import { ProfileBuilder, TraitRadar } from "./ProfileBuilder";
 
@@ -37,7 +39,7 @@ const navItems: { id: View; label: string; icon: IconName }[] = [
   { id: "projects", label: "Projects", icon: "projects" },
   { id: "agents", label: "Agents", icon: "agents" },
   { id: "tasks", label: "Tasks", icon: "tasks" },
-  { id: "knowledge", label: "Knowledge", icon: "knowledge" },
+  { id: "knowledge", label: "Library", icon: "knowledge" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];
 
@@ -48,23 +50,29 @@ export function Dashboard() {
   const [view, setView] = useState<View>("office");
   const [selectedId, setSelectedId] = useState<string>();
   const [editing, setEditing] = useState<Editing>(null);
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [sim] = useState(() => new OfficeSim());
+  const [store] = useState(() => new OfficeStore());
+  const [engine] = useState(() => new WorkEngine(store, sim));
+  const { tasks, activity } = useOffice(store);
+  const setTasks = store.setTasks;
+  const logActivity = store.did;
   const hasWork = tasks.some(isActive);
+  const ollama = useOllamaStatus();
+  const models = ollama.state === "online" ? ollama.models : null;
 
   useEffect(() => {
     sim.setHasWork(hasWork);
   }, [sim, hasWork]);
+
+  useEffect(() => {
+    engine.update(profiles, models ?? []);
+  }, [engine, profiles, models]);
 
   const byId = useMemo(() => new Map(profiles.map((p) => [p.id, p])), [profiles]);
   const selected = selectedId ? byId.get(selectedId) : undefined;
 
   const openNew = (role: AgentRole = "custom") => setEditing({ profile: createProfile(role), isNew: true });
   const openEdit = (profile: AgentProfile) => setEditing({ profile, isNew: false });
-
-  const logActivity = (agentId: string, text: string) =>
-    setActivity((current) => [{ id: crypto.randomUUID(), agentId, text, ago: "just now" }, ...current].slice(0, 8));
 
   return (
     <div className="app">
@@ -93,7 +101,7 @@ export function Dashboard() {
                   />
                 )}
               </section>
-              <ChatPanel sim={sim} profiles={profiles} tasks={tasks} byId={byId} onActivity={logActivity} />
+              <ChatPanel sim={sim} store={store} engine={engine} profiles={profiles} byId={byId} />
               <TasksPanel tasks={tasks} setTasks={setTasks} profiles={profiles} byId={byId} onActivity={logActivity} />
               <div className="right-rail">
                 <ProgressPanel />
@@ -118,7 +126,9 @@ export function Dashboard() {
             </div>
           )}
 
-          {(view === "projects" || view === "knowledge" || view === "settings") && (
+          {view === "knowledge" && <LibraryPage store={store} byId={byId} />}
+
+          {(view === "projects" || view === "settings") && (
             <div className="page">
               <div className="panel empty-state">
                 <Icon name={navItems.find((n) => n.id === view)!.icon} size={28} />
@@ -317,129 +327,50 @@ function PanelHead({ title, children }: { title: string; children?: ReactNode })
 }
 
 function ChatPanel({
-  sim, profiles, tasks, byId, onActivity,
+  sim, store, engine, profiles, byId,
 }: {
   sim: OfficeSim;
+  store: OfficeStore;
+  engine: WorkEngine;
   profiles: AgentProfile[];
-  tasks: Task[];
   byId: Map<string, AgentProfile>;
-  onActivity: (agentId: string, text: string) => void;
 }) {
   const [tab, setTab] = useState<"chat" | "logs" | "system">("chat");
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  // Replies to you in flight (agents don't make small talk meanwhile).
-  const [answering, setAnswering] = useState(0);
   const [draft, setDraft] = useState("");
-  const [typing, setTyping] = useState<AgentProfile>();
   const listRef = useRef<HTMLDivElement>(null);
-  const requests = useRef(new Set<AbortController>());
+  const office = useOffice(store);
   const ollama = useOllamaStatus();
-
-  useEffect(() => {
-    listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, typing, tab]);
-
-  // Stop any replies still streaming if the panel goes away.
-  useEffect(() => {
-    const open = requests.current;
-    return () => open.forEach((controller) => controller.abort());
-  }, []);
-
-  const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  const add = (message: Omit<ChatMessage, "id" | "time">) => {
-    const id = crypto.randomUUID();
-    setMessages((m) => [...m, { id, time: now(), ...message }]);
-    return id;
-  };
-  const update = (id: string, text: string) =>
-    setMessages((m) => m.map((message) => (message.id === id ? { ...message, text } : message)));
-
   const models = ollama.state === "online" ? ollama.models : [];
+  const typing = office.typing.map((id) => byId.get(id)).find(Boolean);
+
+  // With nothing on, agents make small talk in the lounge.
   const lounge = useLoungeChat({
     sim,
     profiles,
     models,
-    enabled: models.length > 0 && answering === 0 && !tasks.some(isActive),
-    post: add,
-    update,
+    enabled: models.length > 0 && office.typing.length === 0 && !office.working && !office.tasks.some(isActive),
+    post: store.post,
+    update: store.edit,
   });
 
-  const send = async () => {
+  const logs = tab === "logs"
+    ? office.logs.filter((l) => l.kind === "tool" || l.kind === "thinking")
+    : office.logs.filter((l) => l.kind === "system" || l.kind === "error");
+
+  useEffect(() => {
+    listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
+  }, [office.messages, office.logs, typing, tab]);
+
+  const send = () => {
     const text = draft.trim();
     if (!text) return;
-    lounge.interrupt();
-    const history = [...messages, { id: crypto.randomUUID(), authorId: "user", time: now(), text }];
-    setMessages(history);
     setDraft("");
-
-    const present = profiles.filter((p) => p.status !== "offline");
-    const mentioned = present.find((p) => text.toLowerCase().includes(p.name.toLowerCase()));
-    const responder = mentioned ?? present.find((p) => p.role === "manager") ?? present[0];
-    if (!responder) return;
-
-    const choice = ollama.state === "online" ? resolveModel(responder, ollama.models) : undefined;
-    if (!choice) {
-      add({
-        authorId: responder.id,
-        error: true,
-        text:
-          ollama.state === "online"
-            ? "There aren't any models in Ollama yet. Run “ollama pull llama3” and ask me again."
-            : "I can't reach Ollama on this machine. Open the Ollama app and ask me again.",
-      });
-      void refreshOllamaStatus();
-      return;
-    }
-
-    const controller = new AbortController();
-    requests.current.add(controller);
-    setAnswering((n) => n + 1);
-    setTyping(responder);
-    sim.setTask(responder.id, "Thinking…");
-    let replyId: string | undefined;
-
-    try {
-      const reply = await streamChat({
-        model: choice.model,
-        messages: buildChatPrompt({ agent: responder, team: profiles, tasks, history }),
-        temperature: responder.model.temperature,
-        maxTokens: Math.min(responder.model.maxTokens, CHAT_MAX_TOKENS),
-        signal: controller.signal,
-        onToken: (full) => {
-          const shown = cleanReply(responder, full);
-          if (replyId) {
-            update(replyId, shown);
-            return;
-          }
-          setTyping(undefined);
-          sim.setTask(responder.id, "Replying in team chat");
-          replyId = add({ authorId: responder.id, text: shown, model: choice.model });
-        },
-      });
-
-      const final = cleanReply(responder, reply);
-      if (!replyId || !final) {
-        setTyping(undefined);
-        add({ authorId: responder.id, error: true, text: "I started to answer but nothing came out. Try asking again?" });
-        return;
-      }
-      sim.say(responder.id, excerpt(final));
-      onActivity(responder.id, "replied in team chat");
-    } catch (error) {
-      if (controller.signal.aborted) return;
-      setTyping(undefined);
-      const reason = error instanceof Error ? error.message : String(error);
-      add({ authorId: responder.id, error: true, text: `Ollama couldn't answer (${reason}).` });
-      void refreshOllamaStatus();
-    } finally {
-      requests.current.delete(controller);
-      setAnswering((n) => n - 1);
-      sim.setTask(responder.id, null);
-    }
+    lounge.interrupt();
+    if (!models.length) void refreshOllamaStatus();
+    void engine.reply(text);
   };
 
-  // Logs fill up once agents run real tools.
-  const shown = tab === "chat" ? messages : [];
+  const empty = tab === "chat" ? office.messages.length === 0 && !typing : logs.length === 0;
 
   return (
     <section className="panel chat-panel">
@@ -457,17 +388,20 @@ function ChatPanel({
       </div>
 
       <div className="chat-list" ref={listRef}>
-        {shown.length === 0 && !typing && (
+        {empty && (
           <p className="chat-empty">
             {tab === "chat"
-              ? "Quiet in here. Say hello, or wait a moment: with nothing on, the team gets chatting in the lounge."
-              : "Nothing logged yet. Tool calls and system events will show up here once agents start real work."}
+              ? "Quiet in here. Give the manager a goal and they'll plan it out, or just say hello. With nothing on, the team gets chatting in the lounge."
+              : tab === "logs"
+                ? "Nothing logged yet. Plans, task steps and library reads and writes show up here."
+                : "No problems so far."}
           </p>
         )}
-        {shown.map((m) => {
+
+        {tab === "chat" && office.messages.map((m) => {
           const author = m.authorId === "user" ? undefined : byId.get(m.authorId);
           return (
-            <div key={m.id} className={`msg ${m.authorId === "user" ? "mine" : ""} ${tab !== "chat" ? "log" : ""} ${m.error ? "error" : ""} ${m.casual ? "casual" : ""}`}>
+            <div key={m.id} className={`msg ${m.authorId === "user" ? "mine" : ""} ${m.error ? "error" : ""} ${m.casual ? "casual" : ""}`}>
               {m.authorId === "user" ? <span className="me small">GB</span> : author && <Avatar avatar={author.avatar} size={30} />}
               <div className="msg-body">
                 <p className="msg-meta">
@@ -480,6 +414,9 @@ function ChatPanel({
             </div>
           );
         })}
+
+        {tab !== "chat" && logs.map((l) => <LogRow key={l.id} entry={l} author={l.agentId === "system" ? undefined : byId.get(l.agentId)} />)}
+
         {typing && tab === "chat" && (
           <div className="msg">
             <Avatar avatar={typing.avatar} size={30} />
@@ -488,11 +425,26 @@ function ChatPanel({
         )}
       </div>
 
-      <form className="chat-input" onSubmit={(e) => { e.preventDefault(); void send(); }}>
+      <form className="chat-input" onSubmit={(e) => { e.preventDefault(); send(); }}>
         <input id="chat-message" placeholder="Message the team… mention an agent by name" value={draft} onChange={(e) => setDraft(e.target.value)} />
         <button className="send" type="submit" aria-label="Send"><Icon name="send" size={18} /></button>
       </form>
     </section>
+  );
+}
+
+function LogRow({ entry, author }: { entry: LogEntry; author?: AgentProfile }) {
+  return (
+    <div className={`msg log ${entry.kind}`}>
+      {author ? <Avatar avatar={author.avatar} size={30} /> : <span className="me small">SYS</span>}
+      <div className="msg-body">
+        <p className="msg-meta">
+          <strong>{author?.name ?? "System"}</strong> <time>{entry.time}</time>
+          {entry.kind === "thinking" && <span className="msg-model">reasoning</span>}
+        </p>
+        <p className="msg-text">{entry.text}</p>
+      </div>
+    </div>
   );
 }
 
