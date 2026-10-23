@@ -11,6 +11,12 @@ export type Task = {
   status: TaskStatus;
   priority: TaskPriority;
   due: string;
+  // From the manager's plan: what good looks like, and whether to file the result.
+  brief?: string;
+  document?: boolean;
+  planId?: string;
+  // The agent's notes once it's done.
+  result?: string;
 };
 
 export type ChatMessage = {
@@ -30,6 +36,16 @@ export type ActivityItem = {
   agentId: string;
   text: string;
   ago: string;
+};
+
+export type LogKind = "tool" | "thinking" | "system" | "error";
+
+export type LogEntry = {
+  id: string;
+  time: string;
+  agentId: string | "system";
+  kind: LogKind;
+  text: string;
 };
 
 export const isActive = (task: Task) => task.status !== "done";

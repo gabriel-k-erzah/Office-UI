@@ -27,3 +27,5 @@ node_modules
 dist
 .env
 .DS_Store
+# The agents' library (.md files filed by the librarian) is local office data
+library/

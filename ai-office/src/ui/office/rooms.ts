@@ -15,6 +15,8 @@ export type Spot = Point & {
   via?: Point[];
   // What an agent is doing while parked here, when it isn't their own desk.
   activity?: string;
+  // Kept for agents with this role (e.g. the librarian's desk).
+  prefer?: string;
 };
 
 export type RoomName =
@@ -50,7 +52,7 @@ export const rooms: Record<RoomName, Room> = {
     hub: { x: 250, y: 228 },
     visitActivity: "Looking something up",
     spots: [
-      { x: 190, y: 214, kind: "desk" },
+      { x: 190, y: 214, kind: "desk", prefer: "librarian" },
       { x: 96, y: 226, kind: "seat", activity: "Reading in the armchair" },
       { x: 300, y: 128, kind: "stand", activity: "Browsing the shelves" },
       { x: 130, y: 238, kind: "stand", activity: "Looking something up" },
