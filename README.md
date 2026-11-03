@@ -37,7 +37,7 @@ React UI ── OfficeView (SVG floor plan) ◄── OfficeSim (pure TS: positi
 You need Node.js and [Ollama](https://ollama.com) with at least one model pulled, for example:
 
 ```sh
-ollama pull llama3.2
+ollama pull llama3
 cd ai-office
 npm install
 npm run dev
